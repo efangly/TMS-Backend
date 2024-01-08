@@ -1,73 +1,118 @@
 import { Request, Response } from "express";
 import { sign } from "jsonwebtoken";
-import { expressjwt } from "express-jwt";
+import { v4 as uuidv4 } from 'uuid';
+import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import fs from "node:fs"
+import path from "node:path";
 import prisma from "../configs/prisma.config";
 import bcrypt from "bcrypt";
-import { users } from "@prisma/client";
 
-interface userlogin {
+
+interface UserLogin {
   username: string,
   password: string
 }
 
+interface UserRegister {
+  user_id: string,
+  user_name: string,
+  user_password: string,
+  display_name?: string,
+  group_id: string,
+  user_picture?: string | null,
+  user_status: string,
+  user_level: string,
+  create_by: string,
+}
+
 const register = async (req: Request, res: Response) => {
-  const params: users = req.body;
+  let pathfile: string = `/img/user/${req.file?.filename}`
+  const { group_id, user_name, user_password, display_name, user_status, user_level, create_by }: UserRegister = req.body;
   const saltRounds = 10;
-  bcrypt.hash(params.user_password, saltRounds, async (err, hash) => {
-    const value = {
-      hos_id: params.hos_id,
-      user_name: params.user_name,
+  bcrypt.hash(user_password, saltRounds, async (err, hash) => {
+    const values: UserRegister = {
+      user_id: `UID-${uuidv4()}`,
+      user_name: user_name,
       user_password: hash,
-      display_name: params.display_name
+      display_name: display_name,
+      group_id: group_id,
+      user_picture: req.file === undefined ? null : pathfile,
+      user_status: user_status,
+      user_level: user_level,
+      create_by: create_by,
     }
     await prisma.users.create({
-      data: value
+      data: values,
+      include: {
+        ward: {
+          include: {
+            hospital: true
+          }
+        }
+      }
     }).then((result) => {
-      res.status(200).json({ 
-        status: 200,
-        msg: "Create Suscess!!" 
+      res.status(201).json({
+        status: 201,
+        msg: "Create Suscess!!",
+        data: result
       });
     }).catch((err) => {
-      res.status(400).json({ error: err });
+      fs.unlinkSync(path.join('public/images/user', String(req.file?.filename)))
+      if(err instanceof PrismaClientKnownRequestError){
+        res.status(400).json({ status: 400, error: err.code === 'P2002' ? 'ชื่อผู้ใช้ซ้ำ' : err });
+      }else{
+        res.status(400).json({ status: 400, error: err });
+      }
     });
   });
+
 };
 
 const checkLogin = async (req: Request, res: Response) => {
-  const { username, password }: userlogin = req.body;
+  const { username, password }: UserLogin = req.body;
   await prisma.users.findUnique({
-    where: { user_name : username }
-  }).then( async (result) => {
-    if(result){
+    where: {
+      user_name: username
+    },
+    include: {
+      ward: {
+        include: {
+          hospital: true
+        }
+      },
+    }
+  }).then(async (result) => {
+    if (result) {
       const match = await bcrypt.compare(password, result.user_password);
-      if(match){
-        const userid: number = result.user_id;
+      if (match) {
+        const userid: string = result.user_id;
+        const hos_id: string = result.ward.hospital.hos_id;
         const username: string = result.user_name;
-        const displayname: string | null = result.display_name;
-        const token: string = sign({ userid,username,displayname }, String(process.env.JWT_SECRET), { expiresIn:'1d' });
-        return res.status(200).json({ token });
-      }else{
-        return res.status(400).json({ error:"รหัสผ่านไม่ถูกต้อง" })
+        const display: string | null = result.display_name;
+        const user_pic: string | null = result.user_picture;
+        const user_level: string | null = result.user_level;
+        const hos_picture: string | null = result.ward.hospital.hos_picture;
+        const hos_name: string | null = result.ward.hospital.hos_name;
+        const group_id: string | null = result.group_id;
+        const user_status: string | null = result.user_status;
+        const token: string = sign({ userid, user_level }, String(process.env.JWT_SECRET));
+        return res.status(200).json({ token, userid, hos_id, username, display, user_pic, user_level, hos_picture, hos_name, group_id, user_status });
+      } else {
+        return res.status(400).json({ error: "รหัสผ่านไม่ถูกต้อง" })
       }
     }
-    else{
-      return res.status(400).json({ error:"ชื่อผู้ใช้ไม่ถูกต้อง" })
+    else {
+      return res.status(400).json({ error: "ชื่อผู้ใช้ไม่ถูกต้อง" })
     }
   }).catch((err) => {
-    res.status(400).json({ 
-      msg: "ไม่สามารถเชื่อม Database ได้" ,
+    res.status(400).json({
+      msg: "ไม่สามารถเชื่อม Database ได้",
       error: err
     });
   });
 };
 
-const requireLogin = expressjwt({
-  secret: String(process.env.JWT_SECRET),
-  algorithms: ["HS256"]
-});
-
-export {
+export default {
   checkLogin,
   register,
-  requireLogin
 };
